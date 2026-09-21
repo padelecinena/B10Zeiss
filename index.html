@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mediciones Zeiss</title>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {
+  getFirestore, collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDocLEPP8DWaTvYVyvIEDU2gzd8umwt05E",
+  authDomain: "calidad-bodyshop.firebaseapp.com",
+  projectId: "calidad-bodyshop",
+  storageBucket: "calidad-bodyshop.firebasestorage.app",
+  messagingSenderId: "537300411404",
+  appId: "1:537300411404:web:eaca51425471bfeeab7a29"
+};
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+
+/* ---------- Datos de puntos de medición (B10, extraídos del PDF) ---------- */
+const GROUPS_B10 = [
+  { name: "Rear Door / Front Door", color: "#f5a623", points: [
+    { id: "SGLS070", nominal: 22.4, tol: 1.5 },
+    { id: "SFLS070", nominal: 0.7,  tol: 1.5 },
+    { id: "SGLS069", nominal: 22.5, tol: 1.5 },
+    { id: "SFLS069", nominal: 0.9,  tol: 1.5 },
+  ]},
+  { name: "Rear Door / Front Door", color: "#29b6d8", points: [
+    { id: "SFLS100", nominal: 2.1,  tol: 1 },
+    { id: "SGLS063", nominal: 5,    tol: 1 },
+    { id: "SFLS063", nominal: 1.6,  tol: 1.1 },
+    { id: "SGLS068", nominal: 3.6,  tol: 1 },
+    { id: "SFLS068", nominal: -0.4, tol: 1.1 },
+    { id: "SGLS065", nominal: 0,    tol: 1,   ref: true },
+    { id: "SFLS065", nominal: 0,    tol: 1.1, ref: true },
+  ]},
+  { name: "Body Side / Rear Door", color: "#7fbf4d", points: [
+    { id: "SFLS099", nominal: 1,    tol: 1 },
+    { id: "SGLS051", nominal: 4,    tol: 1 },
+    { id: "SFLS051", nominal: 0.7,  tol: 1.1 },
+    { id: "SGLS052", nominal: 0,    tol: 1,   ref: true },
+    { id: "SFLS052", nominal: 0,    tol: 1.1, ref: true },
+    { id: "SGLS053", nominal: 4.3,  tol: 1.1 },
+    { id: "SFLS053", nominal: -0.3, tol: 1.1 },
+  ]},
+  { name: "Bodyside / Fender", color: "#7fbf4d", points: [
+    { id: "EGLS078", nominal: 3.5, tol: 1 },
+  ]},
+  { name: "Front Door / Fender", color: "#f2d024", points: [
+    { id: "EGLS079", nominal: 3.5, tol: 1 },
+    { id: "SFLS079", nominal: 0,   tol: 1 },
+    { id: "SFLS080", nominal: 0,   tol: 1 },
+    { id: "EGLS082", nominal: 4,   tol: 1 },
+    { id: "SFLS082", nominal: 0,   tol: 1 },
+  ]},
+  { name: "Fender / Hood", color: "#3fa9dd", points: [
+    { id: "SGFF004", nominal: 3.5,  tol: 1.5 },
+    { id: "SFFF004", nominal: 0.3,  tol: 1.5 },
+    { id: "SGFF002", nominal: 6.6,  tol: 1.5 },
+    { id: "SFFF002", nominal: 2.2,  tol: 1.5 },
+    { id: "SGFF001", nominal: 11.3, tol: 1.5 },
+    { id: "SFFF001", nominal: 7.4,  tol: 1.5 },
+  ]},
+  { name: "Roof / Tailgate", color: "#e04b4b", points: [
+    { id: "EFRFC160", nominal: -12.3, tol: 1.1 },
+    { id: "SGRF159",  nominal: -0.2,  tol: 1 },
+    { id: "SFRF159",  nominal: -0.2,  tol: 1.1 },
+  ]},
+  { name: "Bodyside / Tailgate", color: "#7fbf4d", points: [
+    { id: "SGRF175", nominal: 12.7,  tol: 1 },
+    { id: "SFRF175", nominal: -10.7, tol: 1.1 },
+    { id: "SGRF153", nominal: 8.2,   tol: 1 },
+    { id: "SFRF153", nominal: 20.1,  tol: 1.1 },
+  ]},
+];
+// B05: de momento reutiliza la misma plantilla que B10 hasta que se confirme el PDF propio
+const GROUPS_B05 = GROUPS_B10;
+
+const state = { modelo: null, fase: "", bdg: "", fecha: "" };
+
+/* ---------- Navegación entre pantallas ---------- */
+function show(id) {
+  document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
+  document.getElementById(id).classList.add("active");
+}
+
+function fmtTol(p) {
+  const n = p.nominal.toLocaleString("es-ES", { minimumFractionDigits: 0 });
+  const t = p.tol.toLocaleString("es-ES", { minimumFractionDigits: 0 });
+  return `${n} ±${t}`;
+}
+
+function buildGrid() {
+  const groups = state.modelo === "B10" ? GROUPS_B10 : GROUPS_B05;
+  const wrap = document.getElementById("grid");
+  wrap.innerHTML = "";
+  groups.forEach(group => {
+    const gEl = document.createElement("div");
+    gEl.className = "group";
+    const header = document.createElement("div");
+    header.className = "group-header";
+    header.style.background = group.color;
+    header.textContent = group.name;
+    gEl.appendChild(header);
+
+    group.points.forEach(p => {
+      const row = document.createElement("div");
+      row.className = "point-row" + (p.ref ? " ref-row" : "");
+      const label = document.createElement("div");
+      label.className = "point-label";
+      label.innerHTML = `<span class="point-id">${p.id}</span><span class="point-nom">${fmtTol(p)}</span>`;
+      row.appendChild(label);
+
+      if (p.ref) {
+        const refTag = document.createElement("div");
+        refTag.className = "ref-tag";
+        refTag.textContent = "REFERENTIEL";
+        row.appendChild(refTag);
+      } else {
+        ["L", "R"].forEach(side => {
+          const inp = document.createElement("input");
+          inp.type = "number";
+          inp.step = "0.1";
+          inp.inputMode = "decimal";
+          inp.placeholder = side;
+          inp.className = "cota-input";
+          inp.dataset.id = p.id;
+          inp.dataset.side = side;
+          inp.dataset.nominal = p.nominal;
+          inp.dataset.tol = p.tol;
+          inp.addEventListener("input", () => evalInput(inp));
+          inp.addEventListener("keydown", e => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              focusNext(inp);
+            }
+          });
+          row.appendChild(inp);
+        });
+      }
+      gEl.appendChild(row);
+    });
+    wrap.appendChild(gEl);
+  });
+}
+
+function evalInput(inp) {
+  const val = inp.value.trim().replace(",", ".");
+  inp.classList.remove("ok", "bad");
+  if (val === "") return;
+  const num = parseFloat(val);
+  if (isNaN(num)) return;
+  const nominal = parseFloat(inp.dataset.nominal);
+  const tol = parseFloat(inp.dataset.tol);
+  const within = num >= nominal - tol && num <= nominal + tol;
+  inp.classList.add(within ? "ok" : "bad");
+}
+
+function focusNext(current) {
+  const inputs = Array.from(document.querySelectorAll(".cota-input"));
+  const idx = inputs.indexOf(current);
+  if (idx >= 0 && idx < inputs.length - 1) {
+    inputs[idx + 1].focus();
+    inputs[idx + 1].select();
+  } else {
+    current.blur();
+  }
+}
+
+/* ---------- Guardado ---------- */
+async function guardar() {
+  const inputs = Array.from(document.querySelectorAll(".cota-input"));
+  const valores = {};
+  let rellenos = 0;
+  let fuera = 0;
+  inputs.forEach(inp => {
+    const val = inp.value.trim().replace(",", ".");
+    if (val === "") return;
+    const num = parseFloat(val);
+    if (isNaN(num)) return;
+    rellenos++;
+    if (inp.classList.contains("bad")) fuera++;
+    const key = `${inp.dataset.id}_${inp.dataset.side}`;
+    valores[key] = num;
+  });
+
+  if (rellenos === 0) {
+    alert("No hay ninguna cota rellenada todavía.");
+    return;
+  }
+
+  const btn = document.getElementById("btnGuardar");
+  btn.disabled = true;
+  btn.textContent = "Guardando…";
+  try {
+    const colName = state.modelo === "B10" ? "zeiss_b10" : "zeiss_b05";
+    await addDoc(collection(db, colName), {
+      modelo: state.modelo,
+      fase: state.fase,
+      bdg: state.bdg,
+      fecha: state.fecha,
+      valores,
+      totalCotas: rellenos,
+      fueraTolerancia: fuera,
+      creado: serverTimestamp(),
+    });
+    document.getElementById("saveMsg").textContent =
+      `Guardado ✓ (${rellenos} cotas, ${fuera} fuera de tolerancia)`;
+    document.getElementById("saveMsg").className = "save-msg ok-msg";
+  } catch (err) {
+    console.error(err);
+    document.getElementById("saveMsg").textContent = "Error al guardar: " + err.message;
+    document.getElementById("saveMsg").className = "save-msg bad-msg";
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Guardar medición";
+  }
+}
+
+/* ---------- Historial ---------- */
+async function cargarHistorial() {
+  const list = document.getElementById("histList");
+  list.innerHTML = "<p class='muted'>Cargando…</p>";
+  try {
+    const colName = state.modelo === "B10" ? "zeiss_b10" : "zeiss_b05";
+    const q = query(collection(db, colName), orderBy("creado", "desc"), limit(20));
+    const snap = await getDocs(q);
+    if (snap.empty) {
+      list.innerHTML = "<p class='muted'>Sin registros todavía.</p>";
+      return;
+    }
+    list.innerHTML = "";
+    snap.forEach(doc => {
+      const d = doc.data();
+      const row = document.createElement("div");
+      row.className = "hist-row";
+      const fecha = d.creado?.toDate ? d.creado.toDate().toLocaleString("es-ES") : d.fecha || "";
+      row.innerHTML = `
+        <div><strong>${d.modelo}</strong> · FASE ${d.fase || "-"} · BDG ${d.bdg || "-"}</div>
+        <div class="muted">${fecha} — ${d.totalCotas || 0} cotas, ${d.fueraTolerancia || 0} fuera de tolerancia</div>
+      `;
+      list.appendChild(row);
+    });
+  } catch (err) {
+    list.innerHTML = "<p class='muted'>Error cargando historial: " + err.message + "</p>";
+  }
+}
+
+/* ---------- Eventos de pantalla ---------- */
+document.addEventListener("DOMContentLoaded", () => {
+  document.querySelectorAll("[data-modelo]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      state.modelo = btn.dataset.modelo;
+      document.getElementById("modeloLabel").textContent = state.modelo;
+      const hoy = new Date().toISOString().slice(0, 10);
+      document.getElementById("fechaInput").value = hoy;
+      show("screen-info");
+    });
+  });
+
+  document.getElementById("btnAtras1").addEventListener("click", () => show("screen-modelo"));
+
+  document.getElementById("btnContinuar").addEventListener("click", () => {
+    state.fase = document.getElementById("faseInput").value.trim();
+    state.bdg = document.getElementById("bdgInput").value.trim();
+    state.fecha = document.getElementById("fechaInput").value;
+    if (!state.bdg) {
+      alert("Introduce al menos el BDG.");
+      return;
+    }
+    document.getElementById("topBar").textContent =
+      `${state.modelo} · FASE ${state.fase || "-"} · BDG ${state.bdg}`;
+    buildGrid();
+    document.getElementById("saveMsg").textContent = "";
+    show("screen-grid");
+  });
+
+  document.getElementById("btnAtras2").addEventListener("click", () => show("screen-info"));
+  document.getElementById("btnGuardar").addEventListener("click", guardar);
+  document.getElementById("btnHistorial").addEventListener("click", () => {
+    cargarHistorial();
+    show("screen-hist");
+  });
+  document.getElementById("btnAtras3").addEventListener("click", () => show("screen-grid"));
+});
+</script>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --text: #1a1d23;
+    --muted: #6b7280;
+    --border: #e2e5ea;
+    --accent: #2563eb;
+    --ok: #16a34a;
+    --ok-bg: #dcfce7;
+    --bad: #dc2626;
+    --bad-bg: #fee2e2;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121317;
+      --card: #1c1e24;
+      --text: #f2f3f5;
+      --muted: #9aa0aa;
+      --border: #2c2f36;
+      --ok-bg: #113321;
+      --bad-bg: #3a1414;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #121317; --card: #1c1e24; --text: #f2f3f5; --muted: #9aa0aa;
+    --border: #2c2f36; --ok-bg: #113321; --bad-bg: #3a1414;
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .screen { display: none; min-height: 100%; padding: 20px 16px 40px; max-width: 720px; margin: 0 auto; }
+  .screen.active { display: block; }
+  h1 { font-size: 22px; margin: 8px 0 4px; }
+  .subtitle { color: var(--muted); margin-bottom: 20px; font-size: 14px; }
+  .modelo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 24px; }
+  .modelo-btn {
+    padding: 40px 10px; font-size: 24px; font-weight: 700; border-radius: 16px;
+    border: 2px solid var(--border); background: var(--card); color: var(--text); cursor: pointer;
+  }
+  .modelo-btn:active { background: var(--accent); color: #fff; }
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .field input {
+    width: 100%; padding: 12px 14px; font-size: 16px; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
+  }
+  .btn-row { display: flex; gap: 10px; margin-top: 24px; }
+  .btn {
+    flex: 1; padding: 14px; border-radius: 10px; border: none; font-size: 16px;
+    font-weight: 600; cursor: pointer;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-secondary { background: var(--card); color: var(--text); border: 1px solid var(--border); }
+  #topBar {
+    position: sticky; top: env(safe-area-inset-top, 0px); background: var(--accent); color: #fff;
+    padding: 10px 16px; font-size: 13px; font-weight: 600; margin: -20px -16px 16px;
+  }
+  .group { margin-bottom: 18px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .group-header { padding: 8px 12px; font-weight: 700; color: #1a1a1a; font-size: 13px; }
+  .point-row {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    border-top: 1px solid var(--border); background: var(--card);
+  }
+  .point-row:first-of-type { border-top: none; }
+  .ref-row { opacity: 0.7; }
+  .point-label { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .point-id { font-size: 13px; font-weight: 700; }
+  .point-nom { font-size: 11px; color: var(--muted); }
+  .ref-tag { font-size: 10px; font-weight: 700; color: var(--bad); border: 1px solid var(--bad); border-radius: 6px; padding: 3px 6px; }
+  .cota-input {
+    width: 64px; padding: 8px 6px; text-align: center; font-size: 15px;
+    border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  }
+  .cota-input.ok { background: var(--ok-bg); border-color: var(--ok); font-weight: 700; }
+  .cota-input.bad { background: var(--bad-bg); border-color: var(--bad); font-weight: 700; }
+  #saveBar { position: sticky; bottom: env(safe-area-inset-bottom, 0px); background: var(--bg); padding-top: 10px; }
+  .save-msg { text-align: center; font-size: 13px; margin-top: 8px; min-height: 18px; }
+  .ok-msg { color: var(--ok); font-weight: 600; }
+  .bad-msg { color: var(--bad); font-weight: 600; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .hist-row { padding: 12px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; background: var(--card); }
+</style>
+</head>
+<body>
+
+<div id="screen-modelo" class="screen active">
+  <h1>Mediciones Zeiss</h1>
+  <div class="subtitle">Selecciona el modelo</div>
+  <div class="modelo-grid">
+    <button class="modelo-btn" data-modelo="B10">B10</button>
+    <button class="modelo-btn" data-modelo="B05">B05</button>
+  </div>
+</div>
+
+<div id="screen-info" class="screen">
+  <h1>Datos de la carrocería</h1>
+  <div class="subtitle">Modelo: <strong id="modeloLabel"></strong></div>
+  <div class="field">
+    <label>FASE</label>
+    <input id="faseInput" type="text" placeholder="Ej. PRE-COP, COP...">
+  </div>
+  <div class="field">
+    <label>JSN / BDG</label>
+    <input id="bdgInput" type="text" placeholder="Número de BDG">
+  </div>
+  <div class="field">
+    <label>Fecha</label>
+    <input id="fechaInput" type="date">
+  </div>
+  <div class="btn-row">
+    <button class="btn btn-secondary" id="btnAtras1">Atrás</button>
+    <button class="btn btn-primary" id="btnContinuar">Continuar</button>
+  </div>
+</div>
+
+<div id="screen-grid" class="screen">
+  <div id="topBar"></div>
+  <div id="grid"></div>
+  <div id="saveBar">
+    <div class="btn-row">
+      <button class="btn btn-secondary" id="btnAtras2">Atrás</button>
+      <button class="btn btn-secondary" id="btnHistorial">Historial</button>
+      <button class="btn btn-primary" id="btnGuardar">Guardar medición</button>
+    </div>
+    <div id="saveMsg" class="save-msg"></div>
+  </div>
+</div>
+
+<div id="screen-hist" class="screen">
+  <h1>Historial</h1>
+  <div class="subtitle">Últimas 20 mediciones — <span id="histModelo"></span></div>
+  <div id="histList"></div>
+  <div class="btn-row">
+    <button class="btn btn-secondary" id="btnAtras3">Volver a la medición</button>
+  </div>
+</div>
+
+</body>
+</html>
